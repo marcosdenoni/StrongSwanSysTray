@@ -193,14 +193,69 @@ def tunnel_routes() -> dict[str, str]:
     return routes
 
 
+def _norm(subnet: str) -> str:
+    return subnet if "/" in subnet else subnet + "/32"
+
+
 def connection_state(conn: Connection, routes: dict[str, str]) -> str | None:
     """Retorna o IP virtual se a conexão parece ativa, senão None."""
     for subnet in conn.subnets:
-        if "/" not in subnet:
-            subnet += "/32"
+        subnet = _norm(subnet)
         if subnet in routes:
             return routes[subnet] or "conectado"
     return None
+
+
+def resolve_states(conns: list[Connection], routes: dict[str, str],
+                   owners: dict[str, str]) -> dict[str, str | None]:
+    """Estado de cada conexão, desambiguando conexões com o mesmo rightsubnet.
+
+    A rota da tabela 220 não diz qual conexão a instalou. Quando várias
+    conexões cobrem a mesma sub-rede ativa, só a registrada em 'owners'
+    (sub-rede -> conexão que o tray conectou) é considerada conectada.
+    """
+    claimants: dict[str, list[str]] = {}
+    for conn in conns:
+        for subnet in {_norm(s) for s in conn.subnets}:
+            if subnet in routes:
+                claimants.setdefault(subnet, []).append(conn.name)
+
+    states: dict[str, str | None] = {}
+    for conn in conns:
+        states[conn.name] = None
+        for subnet in conn.subnets:
+            subnet = _norm(subnet)
+            names = claimants.get(subnet, [])
+            if conn.name not in names:
+                continue
+            owner = owners.get(subnet)
+            if len(names) > 1 and owner in names and owner != conn.name:
+                continue
+            states[conn.name] = routes[subnet] or "conectado"
+            break
+    return states
+
+
+def owners_file() -> str:
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache")
+    return os.path.join(base, f"{APP_ID}-owners.json")
+
+
+def load_owners() -> dict[str, str]:
+    try:
+        with open(owners_file(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_owners(owners: dict[str, str]) -> None:
+    try:
+        with open(owners_file(), "w", encoding="utf-8") as fh:
+            json.dump(owners, fh)
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +313,8 @@ class Tray:
         self.states: dict[str, str | None] = {}
         self.daemon = False
         self.signature: tuple | None = None
+        # sub-rede -> conexão que o tray conectou (desambigua rightsubnet repetido)
+        self.owners: dict[str, str] = load_owners()
 
         self.indicator = AppIndicator.Indicator.new(
             APP_ID, ICON_DOWN, AppIndicator.IndicatorCategory.SYSTEM_SERVICES
@@ -281,7 +338,13 @@ class Tray:
     def refresh(self) -> bool:
         routes = tunnel_routes()
         self.daemon = daemon_running()
-        new_states = {c.name: connection_state(c, routes) for c in self.conns}
+        stale = [s for s, owner in self.owners.items()
+                 if s not in routes and owner not in self.busy]
+        if stale:
+            for subnet in stale:
+                del self.owners[subnet]
+            save_owners(self.owners)
+        new_states = resolve_states(self.conns, routes, self.owners)
 
         for name, ip in new_states.items():
             old = self.states.get(name, "unset")
@@ -400,23 +463,33 @@ class Tray:
         threading.Thread(target=worker, daemon=True).start()
 
     def connect(self, conn: Connection) -> None:
+        if not self.daemon:
+            # sobe o serviço antes; 'ipsec start' retorna antes do charon estar pronto
+            self.run_async(conn.name, ["start"],
+                           lambda *_: GLib.timeout_add_seconds(2, self._connect_now, conn))
+        else:
+            self._connect_now(conn)
+
+    def _connect_now(self, conn: Connection) -> bool:
+        previous = dict(self.owners)
+
         def done(code: int, output: str) -> None:
             if code == 0 and "established successfully" in output:
                 ip = connection_state(conn, tunnel_routes())
                 self.notify(conn.name, f"Conectado ({ip})" if ip else "Conectado")
-            elif code in (126, 127):
+                return
+            # devolve as sub-redes a quem as tinha antes da tentativa
+            self.set_owner(conn, clear=True)
+            self.owners.update({k: v for k, v in previous.items() if k not in self.owners})
+            save_owners(self.owners)
+            if code in (126, 127):
                 self.notify(conn.name, "Autenticação cancelada")
             else:
                 self.notify(conn.name, "Falha ao conectar:\n" + last_lines(output))
 
-        if not self.daemon:
-            # sobe o serviço antes; 'ipsec start' retorna antes do charon estar pronto
-            self.run_async(conn.name, ["start"],
-                           lambda *_: GLib.timeout_add_seconds(2, self._connect_now, conn, done))
-        else:
-            self._connect_now(conn, done)
-
-    def _connect_now(self, conn: Connection, done) -> bool:
+        # registra já: a rota aparece antes do 'up' terminar e não deve ser
+        # atribuída a outra conexão com o mesmo rightsubnet
+        self.set_owner(conn)
         self.run_async(conn.name, ["up", conn.name], done)
         return False
 
@@ -427,9 +500,19 @@ class Tray:
             elif code != 0:
                 self.notify(conn.name, "Falha ao desconectar:\n" + last_lines(output))
             else:
+                self.set_owner(conn, clear=True)
                 self.notify(conn.name, "Desconectado")
 
         self.run_async(conn.name, ["down", conn.name], done)
+
+    def set_owner(self, conn: Connection, clear: bool = False) -> None:
+        for subnet in {_norm(s) for s in conn.subnets}:
+            if clear:
+                if self.owners.get(subnet) == conn.name:
+                    del self.owners[subnet]
+            else:
+                self.owners[subnet] = conn.name
+        save_owners(self.owners)
 
     def reload_daemon(self) -> None:
         def done(code: int, output: str) -> None:
@@ -690,8 +773,10 @@ def main() -> None:
     if args.list:
         routes = tunnel_routes()
         print(f"charon: {'rodando' if daemon_running() else 'parado'}")
-        for conn in parse_ipsec_conf(args.config):
-            ip = connection_state(conn, routes)
+        conns = parse_ipsec_conf(args.config)
+        states = resolve_states(conns, routes, load_owners())
+        for conn in conns:
+            ip = states[conn.name]
             print(f"{conn.name:20} {','.join(conn.subnets) or '-':30} "
                   f"{'conectado ' + ip if ip else 'desconectado'}")
         return
