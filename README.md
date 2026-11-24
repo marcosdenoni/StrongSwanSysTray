@@ -6,7 +6,7 @@ Ele foi feito para conexões que o NetworkManager não consegue gerenciar. Um ex
 
 ## Funcionalidades
 
-- O ícone na barra superior indica o estado da VPN: conectada, desconectada ou conectando.
+- O ícone na barra superior indica o estado da VPN: **verde** conectada, **azul** desconectada e **laranja** conectando (SVGs em `icons/`).
 - O menu lista todas as conexões `conn` do `ipsec.conf`, com o IP virtual recebido.
 - **Conectar / Desconectar** cada conexão (`ipsec up` / `ipsec down`). Se o serviço estiver parado, ele é iniciado antes.
 - **Credenciais…**: diálogo para alterar o usuário e a senha (XAuth ou EAP) e a chave PSK de cada conexão, gravados em `/etc/ipsec.secrets`.
@@ -177,4 +177,5 @@ strongswan_systray_secrets.py      helper root (via pkexec) que grava as credenc
 install.sh                         instalação para o usuário
 data/strongswan-systray.desktop    atalho / início automático
 polkit/49-strongswan-systray.rules regra opcional para dispensar a senha
+icons/                             ícones coloridos da bandeja
 ```

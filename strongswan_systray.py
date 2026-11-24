@@ -43,9 +43,12 @@ APP_ID = "strongswan-systray"
 APP_NAME = "StrongSwanSysTray"
 ROUTE_TABLE = "220"
 
-ICON_UP = "network-vpn-symbolic"
-ICON_DOWN = "network-vpn-disconnected-symbolic"
-ICON_BUSY = "network-vpn-acquiring-symbolic"
+# Ícones coloridos (não-symbolic, para o GNOME não recolorir):
+# verde = conectado, azul = desconectado, laranja = conectando.
+ICON_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "icons")
+ICON_UP = "strongswan-systray-connected"
+ICON_DOWN = "strongswan-systray-disconnected"
+ICON_BUSY = "strongswan-systray-busy"
 
 IGNORED_TYPES = {"passthrough", "drop", "reject", "pass"}
 
@@ -260,6 +263,7 @@ class Tray:
             APP_ID, ICON_DOWN, AppIndicator.IndicatorCategory.SYSTEM_SERVICES
         )
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+        self.indicator.set_icon_theme_path(ICON_DIR)
         self.indicator.set_title(APP_NAME)
 
         if Notify is not None:
@@ -533,7 +537,8 @@ class Tray:
         if Notify is None:
             return
         try:
-            Notify.Notification.new(f"VPN {title}", body, ICON_UP).show()
+            Notify.Notification.new(f"VPN {title}", body,
+                                    os.path.join(ICON_DIR, ICON_UP + ".svg")).show()
         except GLib.Error:
             pass
 

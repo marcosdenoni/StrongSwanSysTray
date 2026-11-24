@@ -26,7 +26,7 @@ fi
 
 chmod +x "$EXEC"
 mkdir -p "$APPS" "$AUTOSTART"
-sed "s|@EXEC@|$EXEC|" "$DIR/data/$DESKTOP" > "$APPS/$DESKTOP"
+sed -e "s|@EXEC@|$EXEC|" -e "s|@ICON@|$DIR/icons/strongswan-systray-connected.svg|" "$DIR/data/$DESKTOP" > "$APPS/$DESKTOP"
 cp "$APPS/$DESKTOP" "$AUTOSTART/$DESKTOP"
 echo "Atalho instalado em $APPS e início automático em $AUTOSTART."
 
