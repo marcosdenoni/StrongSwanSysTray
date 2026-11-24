@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=StrongSwanSysTray
+Comment=Conecta e desconecta VPNs strongSwan pela bandeja do sistema
+Exec=@EXEC@
+Icon=network-vpn-symbolic
+Terminal=false
+Categories=Network;
+X-GNOME-Autostart-enabled=true

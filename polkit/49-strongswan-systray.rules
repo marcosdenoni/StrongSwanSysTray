@@ -1,0 +1,10 @@
+// Permite que usuários do grupo "sudo", em sessão local ativa, executem
+// /usr/sbin/ipsec via pkexec sem digitar a senha (usado pelo StrongSwanSysTray).
+// Instalação: sudo install -m 644 49-strongswan-systray.rules /etc/polkit-1/rules.d/
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/sbin/ipsec" &&
+        subject.isInGroup("sudo") && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});
