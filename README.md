@@ -147,6 +147,14 @@ Como funciona:
 - Antes de gravar, ele faz backup em `/etc/ipsec.secrets.systray.bak` e `/etc/ipsec.conf.systray.bak` (permissão 600).
 - Se o strongSwan estiver rodando, ele executa `ipsec rereadsecrets` e, se o `ipsec.conf` mudou, `ipsec update`. Uma conexão já ativa continua com as credenciais antigas até reconectar.
 
+## Nome do processo
+
+O app aparece como **`strongswan-systray`** na linha de comando (`ps`, Monitor do Sistema) e como `strongswan-syst` no nome curto (`top`, `pgrep -x`), porque o kernel limita esse nome a 15 caracteres. Para isso, ele se reexecuta com outro `argv[0]` e usa `prctl(PR_SET_NAME)`. Sob depurador (VS Code), ele mantém o nome `python3`.
+
+```bash
+ps -o pid,rss,args -C strongswan-syst      # memória (RSS, em KB)
+```
+
 ## Como o status é detectado
 
 O socket de controle do strongSwan (`/var/run/charon.ctl`) só é acessível pelo root. Por isso o app deduz o estado sem privilégios:

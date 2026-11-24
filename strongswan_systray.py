@@ -495,7 +495,7 @@ class Tray:
             self.reload_config()
 
         self.run_async(conn.name, [], done,
-                       command=[sys.executable, "-I", SECRETS_HELPER],
+                       command=[python_executable(), "-I", SECRETS_HELPER],
                        stdin=json.dumps(request))
 
     @property
@@ -640,6 +640,43 @@ def last_lines(text: str, n: int = 4) -> str:
     return "\n".join(lines[-n:]) or "(sem detalhes)"
 
 
+PROC_NAME = "strongswan-systray"
+_REEXEC_ENV = "STRONGSWAN_SYSTRAY_PYTHON"
+_python: str | None = None
+
+
+def python_executable() -> str:
+    """Caminho do interpretador (sys.executable fica vazio após o re-exec)."""
+    return _python or sys.executable or shutil.which("python3") or "python3"
+
+
+def set_process_name() -> None:
+    """Faz o processo aparecer como 'strongswan-systray' em vez de 'python3'.
+
+    Reexecuta o interpretador com argv[0] = PROC_NAME (linha de comando) e
+    define o nome curto via prctl(PR_SET_NAME), limitado pelo kernel a 15
+    caracteres ('strongswan-syst'). Não faz nada sob depurador.
+    """
+    global _python
+    if sys.gettrace() is not None or "debugpy" in sys.modules:
+        return
+    _python = os.environ.pop(_REEXEC_ENV, None)  # não vaza para processos filhos
+    if _python is None and sys.executable:
+        os.environ[_REEXEC_ENV] = sys.executable
+        argv = list(getattr(sys, "orig_argv", [sys.executable, *sys.argv]))
+        argv[0] = PROC_NAME
+        try:
+            os.execv(sys.executable, argv)
+        except OSError:
+            os.environ.pop(_REEXEC_ENV, None)  # segue com o nome padrão
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).prctl(15, PROC_NAME.encode(), 0, 0, 0)  # PR_SET_NAME
+    except (OSError, AttributeError):
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", default="/etc/ipsec.conf",
@@ -664,6 +701,7 @@ def main() -> None:
             "Biblioteca AppIndicator não encontrada.\n"
             "Instale com: sudo apt install gir1.2-ayatanaappindicator3-0.1"
         )
+    set_process_name()
     Tray(args.config, max(1, args.interval))
     Gtk.main()
 
