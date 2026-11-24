@@ -1,0 +1,26 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "StrongSwanSysTray",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/strongswan_systray.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                // typelib local (.deps) caso o pacote gir1.2-ayatanaappindicator3-0.1 não esteja instalado
+                "GI_TYPELIB_PATH": "${workspaceFolder}/.deps/root/usr/lib/x86_64-linux-gnu/girepository-1.0"
+            }
+        },
+        {
+            "name": "StrongSwanSysTray --list",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/strongswan_systray.py",
+            "args": ["--list"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
