@@ -12,6 +12,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -345,7 +346,10 @@ class Tray:
 
         menu.append(Gtk.SeparatorMenuItem())
         menu.append(self.action_item("Status detalhado…", lambda _w: self.show_status()))
-        menu.append(self.action_item("Editar configuração…", lambda _w: self.edit_config()))
+        menu.append(self.action_item("Editar ipsec.conf (nano)…",
+                                     lambda _w: self.edit_file(self.config_path, "update")))
+        menu.append(self.action_item("Editar ipsec.secrets (nano)…",
+                                     lambda _w: self.edit_file(self.secrets_path, "rereadsecrets")))
         menu.append(self.action_item("Recarregar configuração", lambda _w: self.reload_daemon()))
         if self.daemon:
             menu.append(self.action_item("Parar serviço strongSwan",
@@ -490,19 +494,27 @@ class Tray:
                        command=[sys.executable, "-I", SECRETS_HELPER],
                        stdin=json.dumps(request))
 
-    def edit_config(self) -> None:
+    @property
+    def secrets_path(self) -> str:
+        return os.path.join(os.path.dirname(self.config_path), "ipsec.secrets")
+
+    def edit_file(self, path: str, apply_action: str) -> None:
+        """Abre o arquivo no nano como root (sudo) num terminal e oferece aplicar."""
         term = find_terminal()
         if term is None:
-            self.notify(APP_NAME, "Nenhum terminal encontrado para editar a configuração")
+            self.notify(APP_NAME, "Nenhum terminal encontrado para editar " + path)
             return
+        target = shlex.quote(path)
         script = (
-            f"sudoedit {self.config_path} && "
-            "read -r -p 'Recarregar configuração do strongSwan agora? [S/n] ' r; "
-            '[ "${r,,}" = n ] || sudo ipsec reload; '
-            "read -r -p 'Enter para fechar' _"
+            f"sudo nano {target} || {{ read -r -p 'Enter para fechar' _; exit 1; }}; "
+            "if pgrep -x charon >/dev/null; then "
+            f"read -r -p 'Aplicar no strongSwan agora (ipsec {apply_action})? [S/n] ' r; "
+            f'[ "${{r,,}}" = n ] || sudo ipsec {apply_action}; '
+            "read -r -p 'Enter para fechar' _; fi"
         )
         subprocess.Popen([*term, "bash", "-c", script], start_new_session=True)
-        GLib.timeout_add_seconds(5, self._watch_config, os.path.getmtime(self.config_path), 0)
+        if path == self.config_path:
+            GLib.timeout_add_seconds(5, self._watch_config, os.path.getmtime(path), 0)
 
     def _watch_config(self, mtime: float, ticks: int) -> bool:
         try:

@@ -11,7 +11,7 @@ Ele foi feito para conexões que o NetworkManager não consegue gerenciar. Um ex
 - **Conectar / Desconectar** cada conexão (`ipsec up` / `ipsec down`). Se o serviço estiver parado, ele é iniciado antes.
 - **Credenciais…**: diálogo para alterar o usuário e a senha (XAuth ou EAP) e a chave PSK de cada conexão, gravados em `/etc/ipsec.secrets`.
 - **Status detalhado**: abre uma janela com a saída de `ipsec statusall`.
-- **Editar configuração**: abre um terminal com `sudoedit /etc/ipsec.conf` e oferece recarregar ao salvar.
+- **Editar ipsec.conf (nano)** / **Editar ipsec.secrets (nano)**: abre um terminal com `sudo nano` no arquivo. Ao fechar o nano, oferece aplicar as mudanças (`ipsec update` ou `ipsec rereadsecrets`).
 - **Recarregar configuração** (`ipsec reload`) e **Iniciar/Parar serviço strongSwan**.
 - Notificações da área de trabalho ao conectar, ao desconectar, em caso de falha e quando o túnel cai.
 - O status é lido **sem root**, então não pede senha a cada verificação. Só as ações pedem autenticação, via `pkexec`.
@@ -115,7 +115,7 @@ conn lan-passthrough
     auto=route
 ```
 
-A PSK e a senha do XAuth ficam em `/etc/ipsec.secrets`. Você pode editá-las pelo menu **Credenciais…** (veja abaixo) ou à mão:
+A PSK e a senha do XAuth ficam em `/etc/ipsec.secrets`. Você pode editá-las pelo menu **Editar ipsec.secrets (nano)…**, pelo diálogo **Credenciais…** (veja abaixo) ou à mão:
 
 ```conf
 : PSK "chave-compartilhada"
