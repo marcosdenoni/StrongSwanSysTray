@@ -9,6 +9,7 @@ Ele foi feito para conexões que o NetworkManager não consegue gerenciar. Um ex
 - O ícone na barra superior indica o estado da VPN: conectada, desconectada ou conectando.
 - O menu lista todas as conexões `conn` do `ipsec.conf`, com o IP virtual recebido.
 - **Conectar / Desconectar** cada conexão (`ipsec up` / `ipsec down`). Se o serviço estiver parado, ele é iniciado antes.
+- **Credenciais…**: diálogo para alterar o usuário e a senha (XAuth ou EAP) e a chave PSK de cada conexão, gravados em `/etc/ipsec.secrets`.
 - **Status detalhado**: abre uma janela com a saída de `ipsec statusall`.
 - **Editar configuração**: abre um terminal com `sudoedit /etc/ipsec.conf` e oferece recarregar ao salvar.
 - **Recarregar configuração** (`ipsec reload`) e **Iniciar/Parar serviço strongSwan**.
@@ -71,7 +72,7 @@ Exemplo:
 ```text
 $ ./strongswan_systray.py --list
 charon: rodando
-ecostorage           10.1.0.0/16                    conectado 10.152.100.2
+minhavpn             10.1.0.0/16                    conectado 10.10.0.5
 ```
 
 ## Configurando uma conexão
@@ -114,12 +115,37 @@ conn lan-passthrough
     auto=route
 ```
 
-A PSK e a senha do XAuth ficam em `/etc/ipsec.secrets`:
+A PSK e a senha do XAuth ficam em `/etc/ipsec.secrets`. Você pode editá-las pelo menu **Credenciais…** (veja abaixo) ou à mão:
 
 ```conf
 : PSK "chave-compartilhada"
 meu.usuario : XAUTH "senha"
 ```
+
+## Editando usuários e senhas
+
+O item **Credenciais…** de cada conexão abre um diálogo com:
+
+| Campo | Quando aparece | Onde é gravado |
+|---|---|---|
+| Usuário (XAuth/EAP) | a conexão usa XAuth (`authby=xauth*`, `leftauth2=xauth`, `xauth_identity`) ou EAP (`leftauth=eap*`, `eap_identity`) | `xauth_identity` / `eap_identity` da conexão no `ipsec.conf` e a linha `usuario : XAUTH` (ou `EAP`) no `ipsec.secrets` |
+| Senha | junto com o usuário | `ipsec.secrets` |
+| Chave PSK | a conexão usa PSK (`authby=secret/psk/xauthpsk`, `leftauth=psk`) | `ipsec.secrets`, com o seletor `%any <rightid>` |
+
+Como funciona:
+
+- **Os valores atuais não aparecem no diálogo.** O `ipsec.secrets` só pode ser lido pelo root. Deixe um campo de senha em branco para manter o valor atual. Se você trocar só o usuário, a senha atual passa para o novo usuário.
+- A gravação é feita por `strongswan_systray_secrets.py`, executado como root via `pkexec`. Ele **sempre pede a senha de administrador**, mesmo com a regra polkit instalada. As senhas chegam a ele pelo stdin, nunca pela linha de comando.
+- No `ipsec.secrets`, as credenciais ficam num bloco por conexão:
+  ```conf
+  # BEGIN strongswan-systray: minhavpn
+  %any 203.0.113.10 : PSK "..."
+  meu.usuario : XAUTH "..."
+  # END strongswan-systray: minhavpn
+  ```
+  Linhas antigas fora do bloco que entrariam em conflito são removidas: PSK com o mesmo gateway ou XAUTH/EAP do mesmo usuário. Linhas genéricas (`: PSK ...`) e de outros usuários ficam como estão. Valores com aspas ou barra invertida são gravados em base64 (`0s...`).
+- Antes de gravar, ele faz backup em `/etc/ipsec.secrets.systray.bak` e `/etc/ipsec.conf.systray.bak` (permissão 600).
+- Se o strongSwan estiver rodando, ele executa `ipsec rereadsecrets` e, se o `ipsec.conf` mudou, `ipsec update`. Uma conexão já ativa continua com as credenciais antigas até reconectar.
 
 ## Como o status é detectado
 
@@ -139,14 +165,15 @@ O socket de controle do strongSwan (`/var/run/charon.ctl`) só é acessível pel
 | Sintoma | Causa provável |
 |---|---|
 | Ícone não aparece | Falta a extensão AppIndicator no GNOME ou o pacote `gir1.2-ayatanaappindicator3-0.1` |
-| "Falha ao conectar" com erro de XAuth | Senha ausente ou errada em `/etc/ipsec.secrets` |
+| "Falha ao conectar" com erro de XAuth | Senha ausente ou errada em `/etc/ipsec.secrets`. Corrija em **Credenciais…** |
 | Conecta, mas nenhum host remoto responde | Use **Status detalhado** e `sudo ip -s xfrm state`. Se os bytes de entrada ficam em 0, o gateway não está devolvendo tráfego: faltam firewall policy ou rota de volta no lado remoto |
 | Internet ou containers Docker param com a VPN ligada | `rightsubnet=0.0.0.0/0` manda todo o tráfego para o túnel. Restrinja às redes remotas |
 
 ## Estrutura
 
 ```text
-strongswan_systray.py              aplicativo (arquivo único)
+strongswan_systray.py              aplicativo
+strongswan_systray_secrets.py      helper root (via pkexec) que grava as credenciais
 install.sh                         instalação para o usuário
 data/strongswan-systray.desktop    atalho / início automático
 polkit/49-strongswan-systray.rules regra opcional para dispensar a senha

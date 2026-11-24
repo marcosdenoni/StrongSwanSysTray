@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -68,6 +69,27 @@ class Connection:
     @property
     def gateway(self) -> str:
         return self.options.get("right", "?")
+
+    @property
+    def uses_psk(self) -> bool:
+        authby = self.options.get("authby", "")
+        return authby in ("secret", "psk", "xauthpsk") or self.options.get("leftauth") == "psk"
+
+    @property
+    def user_auth(self) -> tuple[str, str] | None:
+        """(tipo do segredo, chave da identidade) para XAuth/EAP, ou None."""
+        o = self.options
+        if (o.get("authby", "").startswith("xauth") or o.get("leftauth2") == "xauth"
+                or o.get("xauth") == "client" or "xauth_identity" in o):
+            return "XAUTH", "xauth_identity"
+        if o.get("leftauth", "").startswith("eap") or "eap_identity" in o:
+            return "EAP", "eap_identity"
+        return None
+
+    @property
+    def remote_ids(self) -> list[str]:
+        rid = self.options.get("rightid") or self.options.get("right", "")
+        return [rid] if rid and not rid.startswith("%") else []
 
 
 def parse_ipsec_conf(path: str) -> list[Connection]:
@@ -184,10 +206,17 @@ def ipsec_bin() -> str:
     return shutil.which("ipsec") or "/usr/sbin/ipsec"
 
 
-def run_privileged(*args: str) -> tuple[int, str]:
-    cmd = ["pkexec", ipsec_bin(), *args]
+SECRETS_HELPER = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                              "strongswan_systray_secrets.py")
+
+
+def run_privileged(*args: str, command: list[str] | None = None,
+                   stdin: str | None = None) -> tuple[int, str]:
+    """Executa 'ipsec <args>' (ou outro comando) como root via pkexec."""
+    cmd = ["pkexec", *(command or [ipsec_bin()]), *args]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                              input=stdin)
     except subprocess.TimeoutExpired:
         return 1, "Tempo esgotado aguardando o strongSwan."
     except OSError as exc:
@@ -297,6 +326,9 @@ class Tray:
                                  sensitive=not ip and conn.name not in self.busy),
                 self.action_item("Desconectar", lambda _w, c=conn: self.disconnect(c),
                                  sensitive=bool(ip) and conn.name not in self.busy),
+                self.action_item("Credenciais…", lambda _w, c=conn: self.edit_credentials(c),
+                                 sensitive=conn.name not in self.busy
+                                 and (conn.uses_psk or conn.user_auth is not None)),
             ]
             if single:
                 menu.append(self.label_item(title))
@@ -341,12 +373,13 @@ class Tray:
         return item
 
     # -- ações -------------------------------------------------------------- #
-    def run_async(self, key: str, args: list[str], on_done) -> None:
+    def run_async(self, key: str, args: list[str], on_done,
+                  command: list[str] | None = None, stdin: str | None = None) -> None:
         self.busy.add(key)
         self.refresh()
 
         def worker() -> None:
-            code, output = run_privileged(*args)
+            code, output = run_privileged(*args, command=command, stdin=stdin)
             GLib.idle_add(finish, code, output)
 
         def finish(code: int, output: str) -> bool:
@@ -420,6 +453,43 @@ class Tray:
 
         self.run_async("__status__", ["statusall"], done)
 
+    def edit_credentials(self, conn: Connection) -> None:
+        dialog = CredentialsDialog(conn)
+        response = dialog.run()
+        values = dialog.values()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+
+        user_auth = conn.user_auth
+        request = {
+            "conn": conn.name,
+            "remote_ids": conn.remote_ids,
+            "user_type": user_auth[0] if user_auth else "",
+            "user_key": user_auth[1] if user_auth else "",
+            "identity": values["identity"],
+            "old_identity": conn.options.get(user_auth[1], "") if user_auth else "",
+            "password": values["password"],
+            "psk": values["psk"],
+            "config": self.config_path,
+        }
+
+        def done(code: int, output: str) -> None:
+            if code in (126, 127):
+                self.notify(conn.name, "Autenticação cancelada")
+                return
+            try:
+                result = json.loads(output.splitlines()[-1])
+                message = result["message"]
+            except (ValueError, IndexError, KeyError):
+                message = "Falha ao salvar credenciais:\n" + last_lines(output)
+            self.notify(conn.name, message)
+            self.reload_config()
+
+        self.run_async(conn.name, [], done,
+                       command=[sys.executable, "-I", SECRETS_HELPER],
+                       stdin=json.dumps(request))
+
     def edit_config(self) -> None:
         term = find_terminal()
         if term is None:
@@ -454,6 +524,86 @@ class Tray:
             Notify.Notification.new(f"VPN {title}", body, ICON_UP).show()
         except GLib.Error:
             pass
+
+
+class CredentialsDialog(Gtk.Dialog):
+    """Usuário/senha (XAuth ou EAP) e PSK de uma conexão.
+
+    Os valores atuais não são exibidos (o ipsec.secrets só é legível pelo
+    root): campos de senha vazios mantêm o que já está gravado.
+    """
+
+    def __init__(self, conn: Connection) -> None:
+        super().__init__(title=f"Credenciais — {conn.name}")
+        self.add_buttons("Cancelar", Gtk.ResponseType.CANCEL,
+                         "Salvar", Gtk.ResponseType.OK)
+        self.set_default_response(Gtk.ResponseType.OK)
+        self.set_resizable(False)
+        self.user_auth = conn.user_auth
+
+        grid = Gtk.Grid(row_spacing=8, column_spacing=12, margin=16)
+        self.get_content_area().add(grid)
+        row = 0
+
+        def add(label: str, widget: Gtk.Widget) -> None:
+            nonlocal row
+            lbl = Gtk.Label(label=label, xalign=1)
+            grid.attach(lbl, 0, row, 1, 1)
+            grid.attach(widget, 1, row, 1, 1)
+            row += 1
+
+        add("Gateway:", Gtk.Label(label=conn.gateway, xalign=0, selectable=True))
+
+        self.identity = Gtk.Entry(width_chars=32, activates_default=True)
+        self.password = self.secret_entry()
+        self.psk = self.secret_entry()
+
+        if self.user_auth:
+            kind = "XAuth" if self.user_auth[0] == "XAUTH" else "EAP"
+            self.identity.set_text(conn.options.get(self.user_auth[1], ""))
+            add(f"Usuário ({kind}):", self.identity)
+            add("Senha:", self.password)
+        if conn.uses_psk:
+            add("Chave PSK:", self.psk)
+
+        show = Gtk.CheckButton(label="Mostrar senhas")
+        show.connect("toggled", lambda b: [e.set_visibility(b.get_active())
+                                           for e in (self.password, self.psk)])
+        grid.attach(show, 1, row, 1, 1)
+        row += 1
+
+        hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=48)
+        hint.set_markup(
+            "<small>Campos de senha em branco mantêm o valor atual. "
+            "Os dados são gravados em /etc/ipsec.secrets (com backup) e "
+            "valem a partir da próxima conexão.</small>"
+        )
+        grid.attach(hint, 0, row, 2, 1)
+
+        self.identity.connect("changed", lambda *_: self.validate())
+        self.validate()
+        self.show_all()
+
+    @staticmethod
+    def secret_entry() -> Gtk.Entry:
+        entry = Gtk.Entry(width_chars=32, visibility=False, activates_default=True,
+                          input_purpose=Gtk.InputPurpose.PASSWORD)
+        entry.set_placeholder_text("(manter atual)")
+        return entry
+
+    def validate(self) -> None:
+        ok = True
+        if self.user_auth:
+            ident = self.identity.get_text().strip()
+            ok = bool(ident) and not any(c in ident for c in ' \t"#:')
+        self.set_response_sensitive(Gtk.ResponseType.OK, ok)
+
+    def values(self) -> dict[str, str]:
+        return {
+            "identity": self.identity.get_text().strip(),
+            "password": self.password.get_text(),
+            "psk": self.psk.get_text(),
+        }
 
 
 class StatusWindow(Gtk.Window):
